@@ -14,4 +14,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-codexusage = "codexusage:main"
+codex-cli-usage = "codex_cli_usage:main"

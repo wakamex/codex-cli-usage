@@ -1,10 +1,10 @@
-# codexusage
+# codex-cli-usage
 
 Codex CLI usage monitor. Fetches your rate limit data from OpenAI's ChatGPT backend API and displays it in the terminal.
 
 ## Example output
 
-`codexusage` command:
+`codex-cli-usage` command:
 
 ```
 Plan: plus
@@ -28,21 +28,21 @@ Then run:
 
 ```bash
 # Check usage once
-codexusage
+codex-cli-usage
 
 # Run the daemon (keeps usage-limits.json updated)
-codexusage daemon
+codex-cli-usage daemon
 ```
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
-| `codexusage` | Show current usage (colored terminal output) |
-| `codexusage json` | Print raw JSON |
-| `codexusage daemon [-i SECS]` | Run in foreground, refresh every 5 min (customizable) |
-| `codexusage statusline` | Compact statusline (self-caching, no daemon needed) |
-| `codexusage install` | Print setup instructions |
+| `codex-cli-usage` | Show current usage (colored terminal output) |
+| `codex-cli-usage json` | Print raw JSON |
+| `codex-cli-usage daemon [-i SECS]` | Run in foreground, refresh every 5 min (customizable) |
+| `codex-cli-usage statusline` | Compact statusline (self-caching, no daemon needed) |
+| `codex-cli-usage install` | Print setup instructions |
 
 ## How Codex CLI rate limiting works
 
@@ -67,11 +67,11 @@ Codex CLI gets rate limit data from:
 
 The OAuth tokens live at `~/.codex/auth.json`, written by the Codex CLI on login.
 
-The access token expires roughly hourly. codexusage refreshes it automatically using the stored refresh token.
+The access token expires roughly hourly. codex-cli-usage refreshes it automatically using the stored refresh token.
 
 ### Local files
 
 | File | Written by | Contains |
 |------|-----------|----------|
 | `~/.codex/auth.json` | Codex CLI | OAuth tokens (access, refresh, id_token) |
-| `~/.codex/usage-limits.json` | codexusage daemon | Cached API usage data (this tool) |
+| `~/.codex/usage-limits.json` | codex-cli-usage daemon | Cached API usage data (this tool) |

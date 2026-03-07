@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""codexusage - Codex CLI usage monitor.
+"""codex-cli-usage - Codex CLI usage monitor.
 
 Fetches rate limit data from OpenAI's ChatGPT backend API
 using your Codex CLI OAuth token. Zero external dependencies.
 
 Usage:
-    codexusage              Show current usage (colored)
-    codexusage status       Same as above
-    codexusage json         Print raw JSON
-    codexusage daemon       Run in foreground, refresh every 5 min, write to ~/.codex/usage-limits.json
-    codexusage statusline   Codex statusline command (reads cache)
-    codexusage install      Print setup instructions
+    codex-cli-usage              Show current usage (colored)
+    codex-cli-usage status       Same as above
+    codex-cli-usage json         Print raw JSON
+    codex-cli-usage daemon       Run in foreground, refresh every 5 min, write to ~/.codex/usage-limits.json
+    codex-cli-usage statusline   Codex statusline command (reads cache)
+    codex-cli-usage install      Print setup instructions
 """
 
 import argparse
@@ -262,7 +262,7 @@ def cmd_daemon(interval: int = DAEMON_INTERVAL):
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
-    print(f"codexusage daemon started (refreshing every {interval}s)")
+    print(f"codex-cli-usage daemon started (refreshing every {interval}s)")
     print(f"Writing to {USAGE_FILE}")
 
     while True:
@@ -355,15 +355,15 @@ def cmd_statusline():
 
 def cmd_install():
     """Print setup instructions."""
-    print("""codexusage setup
+    print("""codex-cli-usage setup
 ================
 
 1. Run the daemon (in a terminal, tmux, or systemd):
-   codexusage daemon
+   codex-cli-usage daemon
 
 2. Quick check:
-   codexusage         # show current usage
-   codexusage json    # raw JSON output
+   codex-cli-usage         # show current usage
+   codex-cli-usage json    # raw JSON output
 
 3. The daemon writes to ~/.codex/usage-limits.json every 5 minutes.
 """)
