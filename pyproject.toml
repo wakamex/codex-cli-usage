@@ -1,6 +1,6 @@
 [project]
 name = "codex-cli-usage"
-version = "0.1.5"
+version = "0.1.6"
 description = "Codex CLI usage monitor — fetches rate limits from OpenAI's ChatGPT backend API"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -15,6 +15,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/codex_cli_usage"]
+
+[project.urls]
+Homepage = "https://github.com/wakamex/codex-cli-usage"
+Source = "https://github.com/wakamex/codex-cli-usage"
 
 [project.scripts]
 codex-cli-usage = "codex_cli_usage:main"
