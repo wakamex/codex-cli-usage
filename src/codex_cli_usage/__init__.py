@@ -41,9 +41,10 @@ def _find_codex_path(filename: str) -> Path:
         try:
             result = subprocess.run(
                 ["wsl", "-l", "-q"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, timeout=5,
             )
-            distros = [d.strip().strip("\x00") for d in result.stdout.splitlines() if d.strip().strip("\x00")]
+            decoded = result.stdout.decode("utf-16-le", errors="ignore")
+            distros = [d.strip() for d in decoded.splitlines() if d.strip()]
         except Exception:
             distros = []
 
