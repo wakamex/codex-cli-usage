@@ -25,9 +25,46 @@ from pathlib import Path
 
 _TTY = sys.stdout.isatty()
 
+
+def _find_codex_path(filename: str) -> Path:
+    """Return the first existing path for a .codex file.
+
+    Checks the native path first (~/.codex/<filename>).  On Windows, if the
+    native path doesn't exist, also checks WSL distros via //wsl$/.
+    """
+    native = Path.home() / ".codex" / filename
+    if native.exists():
+        return native
+
+    if sys.platform == "win32":
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["wsl", "-l", "-q"],
+                capture_output=True, text=True, timeout=5,
+            )
+            distros = [d.strip().strip("\x00") for d in result.stdout.splitlines() if d.strip().strip("\x00")]
+        except Exception:
+            distros = []
+
+        for distro in distros:
+            wsl_home = Path(f"//wsl$/{distro}/home")
+            try:
+                users = [u for u in wsl_home.iterdir() if u.is_dir()]
+            except OSError:
+                continue
+            for user_dir in users:
+                candidate = user_dir / ".codex" / filename
+                if candidate.exists():
+                    return candidate
+
+    # Fall back to native path even if it doesn't exist yet
+    return native
+
+
 CODEX_DIR = Path.home() / ".codex"
-AUTH_FILE = CODEX_DIR / "auth.json"
-USAGE_FILE = CODEX_DIR / "usage-limits.json"
+AUTH_FILE = _find_codex_path("auth.json")
+USAGE_FILE = _find_codex_path("usage-limits.json")
 DAEMON_INTERVAL = 300  # 5 minutes
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
