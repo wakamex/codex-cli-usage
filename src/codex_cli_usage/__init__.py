@@ -155,7 +155,7 @@ def fetch_usage() -> dict:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            if e.code == 401 and attempt == 0:
+            if e.code in (401, 403) and attempt == 0:
                 access_token = refresh_access_token(auth)
             else:
                 raise
