@@ -166,7 +166,7 @@ def fetch_usage() -> dict:
 def build_usage_json(api_data: dict) -> dict:
     """Transform API response into our cached format."""
     plan = api_data.get("plan_type", "unknown")
-    rl = api_data.get("rate_limit", {})
+    rl = api_data.get("rate_limit") or {}
 
     result = {
         "plan": plan,
@@ -191,12 +191,12 @@ def build_usage_json(api_data: dict) -> dict:
         }
 
     # Additional rate limits (e.g. per-model limits)
-    additional = api_data.get("additional_rate_limits", [])
+    additional = api_data.get("additional_rate_limits") or []
     if additional:
         result["additional"] = []
         for item in additional:
             name = item.get("limit_name", "")
-            sub_rl = item.get("rate_limit", {})
+            sub_rl = item.get("rate_limit") or {}
             entry = {"name": name}
             p = sub_rl.get("primary_window")
             if p:
@@ -213,7 +213,7 @@ def build_usage_json(api_data: dict) -> dict:
             result["additional"].append(entry)
 
     # Code review limits
-    cr = api_data.get("code_review_rate_limit", {})
+    cr = api_data.get("code_review_rate_limit") or {}
     cr_primary = cr.get("primary_window")
     if cr_primary and cr_primary.get("used_percent", 0) > 0:
         result["code_review"] = {
@@ -222,7 +222,7 @@ def build_usage_json(api_data: dict) -> dict:
         }
 
     # Credits
-    credits = api_data.get("credits", {})
+    credits = api_data.get("credits") or {}
     if credits and credits.get("has_credits"):
         result["credits"] = credits
 
