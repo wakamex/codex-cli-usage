@@ -2,7 +2,8 @@
 """codex-cli-usage - Codex CLI usage monitor.
 
 Fetches rate limit data from OpenAI's ChatGPT backend API
-using your Codex CLI OAuth token. Zero external dependencies.
+through Codex's app-server, with a direct HTTP compatibility fallback.
+Zero external Python dependencies.
 
 Usage:
     codex-cli-usage              Show current usage (colored)
@@ -15,10 +16,13 @@ Usage:
 
 import argparse
 import json
+import queue
+import shutil
 import signal
+import subprocess
 import sys
+import threading
 import time
-import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,7 +41,6 @@ def _find_codex_path(filename: str) -> Path:
         return native
 
     if sys.platform == "win32":
-        import subprocess
         try:
             result = subprocess.run(
                 ["wsl", "-l", "-q"],
@@ -67,9 +70,21 @@ CODEX_DIR = Path.home() / ".codex"
 AUTH_FILE = _find_codex_path("auth.json")
 USAGE_FILE = _find_codex_path("usage-limits.json")
 DAEMON_INTERVAL = 300  # 5 minutes
-CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
-TOKEN_URL = "https://auth.openai.com/oauth/token"
+AUTH_REFRESH_ERROR = "Authentication refresh failed. Run codex login again."
+USAGE_403_ERROR = "Usage service temporarily rejected the request (HTTP 403). Try again."
+USAGE_403_RETRY_DELAYS = (0, 0.25, 0.5, 0.75, 1, 1.5, 2)
+APP_SERVER_TIMEOUT = 20
+CLIENT_VERSION = "0.1.8"
+_RPC_EOF = object()
+
+
+class AuthenticationError(RuntimeError):
+    """Authentication could not be recovered automatically."""
+
+
+class UsageServiceError(RuntimeError):
+    """The usage service rejected an otherwise authenticated request."""
 
 
 def get_auth() -> dict | None:
@@ -100,32 +115,209 @@ def get_plan(auth: dict | None = None) -> str:
         return "unknown"
 
 
-def refresh_access_token(auth: dict) -> str:
-    """Refresh the access token using the refresh token."""
-    tokens = auth.get("tokens", {})
-    refresh_token = tokens.get("refresh_token")
-    if not refresh_token:
-        raise RuntimeError("No refresh token in auth.json")
-
-    data = urllib.parse.urlencode({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-    }).encode()
-
+def _request_usage(access_token: str, account_id: str) -> dict:
     req = urllib.request.Request(
-        TOKEN_URL,
-        data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        USAGE_URL,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "chatgpt-account-id": account_id,
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+            "Accept": "application/json",
+        },
     )
     with urllib.request.urlopen(req, timeout=10) as resp:
-        result = json.loads(resp.read())
-
-    return result["access_token"]
+        return json.loads(resp.read())
 
 
-def fetch_usage() -> dict:
-    """Fetch usage from ChatGPT's backend API.
+def _request_usage_with_403_retry(access_token: str, account_id: str) -> dict:
+    """Retry transient 403 responses without refreshing credentials."""
+    last_error = None
+    transient_html_403 = False
+    for delay in (None, *USAGE_403_RETRY_DELAYS):
+        if delay is not None:
+            time.sleep(delay)
+        try:
+            return _request_usage(access_token, account_id)
+        except urllib.error.HTTPError as error:
+            if error.code != 403:
+                raise
+            last_error = error
+            content_type = error.headers.get_content_type() if error.headers else ""
+            transient_html_403 = content_type == "text/html"
+
+    if transient_html_403:
+        raise UsageServiceError(USAGE_403_ERROR) from None
+    raise last_error
+
+
+def _read_rpc_lines(stream, messages: queue.Queue) -> None:
+    try:
+        for line in stream:
+            messages.put(line)
+    finally:
+        messages.put(_RPC_EOF)
+
+
+def _wait_for_rpc_response(messages: queue.Queue, request_id: int, deadline: float) -> dict | None:
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            line = messages.get(timeout=remaining)
+        except queue.Empty:
+            return None
+        if line is _RPC_EOF:
+            return None
+        try:
+            message = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(message, dict):
+            return None
+        if message.get("id") == request_id:
+            return message
+
+
+def _stop_app_server(process: subprocess.Popen, deadline: float) -> bool:
+    if process.stdin and not process.stdin.closed:
+        process.stdin.close()
+    try:
+        return process.wait(timeout=max(0, deadline - time.monotonic())) == 0
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        return False
+
+
+def _rate_limit_snapshot(snapshot: dict) -> dict:
+    result = {}
+    for kind in ("primary", "secondary"):
+        window = snapshot.get(kind)
+        if not isinstance(window, dict):
+            continue
+        duration_mins = window.get("windowDurationMins")
+        result[f"{kind}_window"] = {
+            "used_percent": window.get("usedPercent"),
+            "reset_at": window.get("resetsAt"),
+            "limit_window_seconds": duration_mins * 60
+            if isinstance(duration_mins, int | float) and not isinstance(duration_mins, bool)
+            else None,
+        }
+    return result
+
+
+def _adapt_app_server_rate_limits(result: dict) -> dict | None:
+    aggregate = result.get("rateLimits")
+    if not isinstance(aggregate, dict):
+        return None
+
+    api_data = {
+        "plan_type": result.get("planType") or get_plan(),
+        "rate_limit": _rate_limit_snapshot(aggregate),
+    }
+    by_limit_id = result.get("rateLimitsByLimitId")
+    if not isinstance(by_limit_id, dict):
+        return api_data
+
+    aggregate_id = aggregate.get("limitId") or "codex"
+    additional = []
+    for limit_id, snapshot in by_limit_id.items():
+        if (
+            limit_id in {aggregate_id, "codex"}
+            or not isinstance(snapshot, dict)
+            or snapshot == aggregate
+        ):
+            continue
+        additional.append({
+            "limit_name": snapshot.get("limitName") or limit_id,
+            "rate_limit": _rate_limit_snapshot(snapshot),
+        })
+    if additional:
+        api_data["additional_rate_limits"] = additional
+    return api_data
+
+
+def _fetch_usage_via_app_server() -> dict | None:
+    """Fetch usage through Codex's authenticated JSON-RPC app-server."""
+    codex = shutil.which("codex")
+    if not codex:
+        return None
+
+    deadline = time.monotonic() + APP_SERVER_TIMEOUT
+    try:
+        process = subprocess.Popen(
+            [codex, "app-server", "--stdio"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+        )
+    except OSError:
+        return None
+
+    stopped = False
+    try:
+        if process.stdin is None or process.stdout is None:
+            return None
+        messages = queue.Queue()
+        threading.Thread(
+            target=_read_rpc_lines,
+            args=(process.stdout, messages),
+            daemon=True,
+        ).start()
+
+        initialize = {
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "clientInfo": {
+                    "name": "codex_cli_usage",
+                    "title": "Codex CLI Usage",
+                    "version": CLIENT_VERSION,
+                },
+            },
+        }
+        process.stdin.write(json.dumps(initialize) + "\n")
+        process.stdin.flush()
+        initialized = _wait_for_rpc_response(messages, 1, deadline)
+        if not initialized or initialized.get("error") or "result" not in initialized:
+            return None
+
+        process.stdin.write(json.dumps({"method": "initialized"}) + "\n")
+        process.stdin.write(json.dumps({
+            "method": "account/rateLimits/read",
+            "id": 2,
+        }) + "\n")
+        process.stdin.flush()
+        response = _wait_for_rpc_response(messages, 2, deadline)
+        if not response or response.get("error") or not isinstance(response.get("result"), dict):
+            return None
+        usage = _adapt_app_server_rate_limits(response["result"])
+        if usage is None:
+            return None
+        stopped = _stop_app_server(process, deadline)
+        return usage if stopped else None
+    except (BrokenPipeError, OSError, ValueError):
+        return None
+    finally:
+        if not stopped and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+
+
+def _fetch_usage_direct() -> dict:
+    """Compatibility fallback using auth.json and urllib directly.
 
     Returns the raw API response with rate limit windows, plan info, etc.
     """
@@ -140,27 +332,66 @@ def fetch_usage() -> dict:
 
     account_id = tokens.get("account_id", "")
 
-    # Try with current token, refresh if needed
-    for attempt in range(2):
-        req = urllib.request.Request(
-            USAGE_URL,
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "chatgpt-account-id": account_id,
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
-                "Accept": "application/json",
-            },
-        )
+    try:
+        return _request_usage_with_403_retry(access_token, account_id)
+    except urllib.error.HTTPError as error:
+        if error.code not in (401, 403):
+            raise
+
+    # Codex may have rotated credentials while this process was requesting.
+    latest = get_auth()
+    latest_tokens = latest.get("tokens", {}) if latest else {}
+    latest_access_token = latest_tokens.get("access_token")
+    if latest_access_token and latest_access_token != access_token:
+        auth = latest
+        access_token = latest_access_token
+        account_id = latest_tokens.get("account_id", account_id)
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403) and attempt == 0:
-                access_token = refresh_access_token(auth)
-            else:
+            return _request_usage_with_403_retry(access_token, account_id)
+        except urllib.error.HTTPError as error:
+            if error.code not in (401, 403):
                 raise
 
-    raise RuntimeError("Failed to fetch usage after token refresh")
+    raise AuthenticationError(AUTH_REFRESH_ERROR) from None
+
+
+def fetch_usage() -> dict:
+    """Fetch usage through Codex, falling back to direct HTTP for compatibility."""
+    usage = _fetch_usage_via_app_server()
+    return usage if usage is not None else _fetch_usage_direct()
+
+
+_WINDOW_CLASSES = (
+    ("5h", "5-hour", 5 * 3600),
+    ("daily", "Daily", 24 * 3600),
+    ("weekly", "Weekly", 7 * 24 * 3600),
+    ("monthly", "Monthly", 30 * 24 * 3600),
+    ("annual", "Annual", 365 * 24 * 3600),
+)
+
+
+def classify_window(seconds: int | float | None, kind: str) -> tuple[str, str]:
+    """Derive a stable key and display label from a window duration."""
+    if not isinstance(seconds, int | float) or isinstance(seconds, bool) or seconds <= 0:
+        return kind, kind.title()
+    for key, label, expected in _WINDOW_CLASSES:
+        if abs(seconds - expected) / expected <= 0.1:
+            return key, label
+    return kind, kind.title()
+
+
+def _build_window(kind: str, window: dict) -> dict:
+    seconds = window.get("limit_window_seconds")
+    key, label = classify_window(seconds, kind)
+    reset_at = window.get("reset_at")
+    return {
+        "kind": kind,
+        "pct": window.get("used_percent"),
+        "resets_at": datetime.fromtimestamp(reset_at, tz=timezone.utc).isoformat() if reset_at else None,
+        "window_secs": seconds,
+        "key": key,
+        "label": label,
+    }
 
 
 def build_usage_json(api_data: dict) -> dict:
@@ -169,47 +400,43 @@ def build_usage_json(api_data: dict) -> dict:
     rl = api_data.get("rate_limit") or {}
 
     result = {
+        "schema_version": 2,
         "plan": plan,
         "source": "api",
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    primary = rl.get("primary_window")
-    if primary:
-        result["5h"] = {
-            "pct": primary["used_percent"],
-            "resets_at": datetime.fromtimestamp(primary["reset_at"], tz=timezone.utc).isoformat() if primary.get("reset_at") else None,
-            "window_secs": primary.get("limit_window_seconds"),
+    for kind in ("primary", "secondary"):
+        raw_window = rl.get(f"{kind}_window")
+        if not isinstance(raw_window, dict):
+            continue
+        window = _build_window(kind, raw_window)
+        result[kind] = {
+            "pct": window["pct"],
+            "resets_at": window["resets_at"],
+            "window_secs": window["window_secs"],
         }
+        legacy_key = {"5h": "5h", "weekly": "7d"}.get(window["key"])
+        if legacy_key and legacy_key not in result:
+            result[legacy_key] = dict(result[kind])
 
-    secondary = rl.get("secondary_window")
-    if secondary:
-        result["7d"] = {
-            "pct": secondary["used_percent"],
-            "resets_at": datetime.fromtimestamp(secondary["reset_at"], tz=timezone.utc).isoformat() if secondary.get("reset_at") else None,
-            "window_secs": secondary.get("limit_window_seconds"),
-        }
-
-    # Additional rate limits (e.g. per-model limits)
+    # Preserve additional limits in JSON for compatibility, but normal output
+    # intentionally shows aggregate Codex limits only.
     additional = api_data.get("additional_rate_limits") or []
     if additional:
         result["additional"] = []
         for item in additional:
-            name = item.get("limit_name", "")
+            entry = {"name": item.get("limit_name", "")}
             sub_rl = item.get("rate_limit") or {}
-            entry = {"name": name}
-            p = sub_rl.get("primary_window")
-            if p:
-                entry["primary"] = {
-                    "pct": p["used_percent"],
-                    "resets_at": datetime.fromtimestamp(p["reset_at"], tz=timezone.utc).isoformat() if p.get("reset_at") else None,
-                }
-            s = sub_rl.get("secondary_window")
-            if s:
-                entry["secondary"] = {
-                    "pct": s["used_percent"],
-                    "resets_at": datetime.fromtimestamp(s["reset_at"], tz=timezone.utc).isoformat() if s.get("reset_at") else None,
-                }
+            for kind in ("primary", "secondary"):
+                raw_window = sub_rl.get(f"{kind}_window")
+                if isinstance(raw_window, dict):
+                    window = _build_window(kind, raw_window)
+                    entry[kind] = {
+                        "pct": window["pct"],
+                        "resets_at": window["resets_at"],
+                        "window_secs": window["window_secs"],
+                    }
             result["additional"].append(entry)
 
     # Code review limits
@@ -226,6 +453,40 @@ def build_usage_json(api_data: dict) -> dict:
     if credits and credits.get("has_credits"):
         result["credits"] = credits
 
+    return result
+
+
+def usage_windows(usage: dict) -> list[dict]:
+    """Enumerate schema-v2 windows, falling back to duration-keyed caches."""
+    result = []
+    if usage.get("schema_version", 1) >= 2 or any(key in usage for key in ("primary", "secondary")):
+        for kind in ("primary", "secondary"):
+            bucket = usage.get(kind)
+            if not isinstance(bucket, dict):
+                continue
+            key, label = classify_window(bucket.get("window_secs"), kind)
+            result.append({**bucket, "kind": kind, "key": key, "label": label})
+        return result
+
+    for legacy_key, kind, fallback_seconds in (
+        ("5h", "primary", 5 * 3600),
+        ("7d", "secondary", 7 * 24 * 3600),
+    ):
+        bucket = usage.get(legacy_key)
+        if not isinstance(bucket, dict):
+            continue
+        seconds = bucket.get("window_secs")
+        if not isinstance(seconds, int | float) or isinstance(seconds, bool) or seconds <= 0:
+            seconds = fallback_seconds
+        key, label = classify_window(seconds, kind)
+        result.append({
+            "kind": kind,
+            "pct": bucket.get("pct"),
+            "resets_at": bucket.get("resets_at"),
+            "window_secs": seconds,
+            "key": key,
+            "label": label,
+        })
     return result
 
 
@@ -273,24 +534,11 @@ def cmd_status(raw_json=False):
             return ""
 
     print(f"Plan: {data.get('plan', '?')}")
-    for label, key in [
-        ("Session (5h)", "5h"),
-        ("Week (7d)", "7d"),
-    ]:
-        bucket = data.get(key)
-        if bucket:
-            pct = bucket["pct"]
-            reset = fmt_reset(bucket.get("resets_at"))
-            print(f"  {label:20s} {color_pct(pct)}{D}{reset}{RST}")
-
-    # Additional per-model limits
-    for item in data.get("additional", []):
-        name = item["name"]
-        for wlabel, wkey in [("5h", "primary"), ("7d", "secondary")]:
-            w = item.get(wkey)
-            if w and w.get("pct", 0) > 0:
-                label = f"{name} ({wlabel})"
-                print(f"  {label:20s} {color_pct(w['pct'])}{D}{fmt_reset(w.get('resets_at'))}{RST}")
+    for window in usage_windows(data):
+        if window.get("pct") is None:
+            continue
+        reset = fmt_reset(window.get("resets_at"))
+        print(f"  {window['label']:20s} {color_pct(window['pct'])}{D}{reset}{RST}")
 
     cr = data.get("code_review")
     if cr:
@@ -312,10 +560,9 @@ def cmd_daemon(interval: int = DAEMON_INTERVAL):
             data = build_usage_json(api_data)
             write_usage_file(data)
             pcts = []
-            for key in ("5h", "7d"):
-                b = data.get(key)
-                if b:
-                    pcts.append(f"{key}:{int(b['pct'])}%")
+            for window in usage_windows(data):
+                if window.get("pct") is not None:
+                    pcts.append(f"{window['key']}:{int(window['pct'])}%")
             print(f"[{datetime.now().strftime('%H:%M:%S')}] {' '.join(pcts)}")
         except Exception as e:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Error: {e}", file=sys.stderr)
@@ -375,19 +622,17 @@ def cmd_statusline():
     usage = _get_cached_usage()
 
     plan = usage.get("plan", "?")
-    five_h = usage.get("5h", {})
-    seven_d = usage.get("7d", {})
+    windows = usage_windows(usage)
 
     parts = []
 
-    if five_h:
-        parts.append(f"5h:{color_pct(int(five_h.get('pct', 0)))}")
-    if seven_d:
-        parts.append(f"7d:{color_pct(int(seven_d.get('pct', 0)))}")
+    for window in windows:
+        if window.get("pct") is not None:
+            parts.append(f"{window['key']}:{color_pct(int(window['pct']))}")
 
     parts.append(f"{D}{plan}{RST}")
 
-    reset = fmt_reset(five_h.get("resets_at"))
+    reset = fmt_reset(windows[0].get("resets_at")) if windows else ""
     if reset:
         parts.append(f"{D}reset:{reset}{RST}")
 
@@ -423,17 +668,22 @@ def main():
     args = parser.parse_args()
 
     cmd = args.command or "status"
-    if cmd == "status":
-        cmd_status()
-    elif cmd == "json":
-        cmd_status(raw_json=True)
-    elif cmd == "daemon":
-        cmd_daemon(interval=args.interval)
-    elif cmd == "statusline":
-        cmd_statusline()
-    elif cmd == "install":
-        cmd_install()
+    try:
+        if cmd == "status":
+            cmd_status()
+        elif cmd == "json":
+            cmd_status(raw_json=True)
+        elif cmd == "daemon":
+            cmd_daemon(interval=args.interval)
+        elif cmd == "statusline":
+            cmd_statusline()
+        elif cmd == "install":
+            cmd_install()
+    except (AuthenticationError, UsageServiceError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

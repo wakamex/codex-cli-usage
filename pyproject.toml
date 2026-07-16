@@ -1,7 +1,7 @@
 [project]
 name = "codex-cli-usage"
-version = "0.1.7"
-description = "Codex CLI usage monitor — fetches rate limits from OpenAI's ChatGPT backend API"
+version = "0.1.8"
+description = "Codex CLI usage monitor — fetches rate limits through the Codex app-server"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []

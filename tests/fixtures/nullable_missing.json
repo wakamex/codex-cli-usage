@@ -1,0 +1,19 @@
+[
+  {
+    "name": "nullable rate_limit",
+    "response": {"rate_limit": null},
+    "windows": []
+  },
+  {
+    "name": "missing rate_limit",
+    "response": {},
+    "windows": []
+  },
+  {
+    "name": "nullable windows",
+    "response": {
+      "rate_limit": {"primary_window": null, "secondary_window": null}
+    },
+    "windows": []
+  }
+]

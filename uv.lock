@@ -2,7 +2,19 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
+[options]
+exclude-newer = "2026-07-05T20:06:09.848919716Z"
+exclude-newer-span = "P7D"
+
+[options.exclude-newer-package]
+clanker-analytics = false
+ghp = false
+search-claude-history = false
+gemini-cli-usage = false
+ccusage = false
+codex-cli-usage = false
+
 [[package]]
 name = "codex-cli-usage"
-version = "0.1.4"
+version = "0.1.8"
 source = { editable = "." }

@@ -1,0 +1,27 @@
+{
+  "plan_type": "plus",
+  "rate_limit": {
+    "primary_window": {
+      "used_percent": 12,
+      "reset_at": null,
+      "limit_window_seconds": 18000
+    },
+    "secondary_window": {
+      "used_percent": 34,
+      "reset_at": null,
+      "limit_window_seconds": 604800
+    }
+  },
+  "additional_rate_limits": [
+    {
+      "limit_name": "Spark",
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 99,
+          "reset_at": null,
+          "limit_window_seconds": 18000
+        }
+      }
+    }
+  ]
+}

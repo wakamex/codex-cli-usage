@@ -1,0 +1,44 @@
+[
+  {
+    "name": "daily",
+    "key": "daily",
+    "label": "Daily",
+    "response": {
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 1,
+          "reset_at": null,
+          "limit_window_seconds": 86400
+        }
+      }
+    }
+  },
+  {
+    "name": "monthly",
+    "key": "monthly",
+    "label": "Monthly",
+    "response": {
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 2,
+          "reset_at": null,
+          "limit_window_seconds": 2678400
+        }
+      }
+    }
+  },
+  {
+    "name": "unknown",
+    "key": "primary",
+    "label": "Primary",
+    "response": {
+      "rate_limit": {
+        "primary_window": {
+          "used_percent": 3,
+          "reset_at": null,
+          "limit_window_seconds": 123456
+        }
+      }
+    }
+  }
+]
