@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 import urllib.error
@@ -64,6 +65,14 @@ class AuthenticationRecoveryTests(unittest.TestCase):
 
     def write_auth(self, auth):
         self.auth_file.write_text(json.dumps(auth))
+
+    def test_codex_home_sets_direct_auth_path(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ, {"CODEX_HOME": tmp}, clear=True
+        ):
+            self.assertEqual(
+                codex_cli_usage._find_codex_auth_path(), Path(tmp) / "auth.json"
+            )
 
     def test_transient_403_retries_same_token_without_refresh(self):
         requests = []

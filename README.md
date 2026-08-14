@@ -91,7 +91,10 @@ window actually classifies as 5-hour or weekly. Readers should prefer
 
 ### Authentication
 
-The OAuth tokens live at `~/.codex/auth.json`, written by the Codex CLI on login.
+The OAuth tokens live at `~/.codex/auth.json` by default and are written by the
+Codex CLI on login. When `CODEX_HOME` is set, the direct compatibility fallback
+reads `$CODEX_HOME/auth.json`. The preferred app-server path leaves credential
+resolution to Codex.
 
 Codex owns automatic token refresh and credential persistence. The compatibility
 fallback reads `auth.json` but never modifies credentials.

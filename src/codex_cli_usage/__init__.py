@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import json
+import os
 import queue
 import shutil
 import signal
@@ -66,8 +67,15 @@ def _find_codex_path(filename: str) -> Path:
     return native
 
 
+def _find_codex_auth_path() -> Path:
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home) / "auth.json"
+    return _find_codex_path("auth.json")
+
+
 CODEX_DIR = Path.home() / ".codex"
-AUTH_FILE = _find_codex_path("auth.json")
+AUTH_FILE = _find_codex_auth_path()
 USAGE_FILE = _find_codex_path("usage-limits.json")
 DAEMON_INTERVAL = 300  # 5 minutes
 USAGE_URL = "https://chatgpt.com/backend-api/codex/usage"
@@ -323,7 +331,7 @@ def _fetch_usage_direct() -> dict:
     """
     auth = get_auth()
     if not auth:
-        raise RuntimeError("No auth at ~/.codex/auth.json — run `codex` first")
+        raise RuntimeError(f"No auth at {AUTH_FILE}. Run `codex` first")
 
     tokens = auth.get("tokens", {})
     access_token = tokens.get("access_token")
