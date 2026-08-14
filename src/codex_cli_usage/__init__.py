@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import queue
 import shutil
@@ -389,13 +390,36 @@ def classify_window(seconds: int | float | None, kind: str) -> tuple[str, str]:
 
 
 def _build_window(kind: str, window: dict) -> dict:
+    used_percent = window.get("used_percent")
     seconds = window.get("limit_window_seconds")
-    key, label = classify_window(seconds, kind)
     reset_at = window.get("reset_at")
+    for value in (used_percent, seconds, reset_at):
+        if value is not None and (
+            not isinstance(value, int | float)
+            or isinstance(value, bool)
+            or (isinstance(value, float) and not math.isfinite(value))
+        ):
+            raise UsageServiceError("Invalid rate limit response")
+    if seconds is not None and seconds <= 0:
+        raise UsageServiceError("Invalid rate limit response")
+
+    try:
+        key, label = classify_window(seconds, kind)
+    except OverflowError:
+        raise UsageServiceError("Invalid rate limit response") from None
+    try:
+        resets_at = (
+            datetime.fromtimestamp(reset_at, tz=timezone.utc).isoformat()
+            if reset_at is not None
+            else None
+        )
+    except (OSError, OverflowError, ValueError):
+        raise UsageServiceError("Invalid rate limit response") from None
+
     return {
         "kind": kind,
-        "pct": window.get("used_percent"),
-        "resets_at": datetime.fromtimestamp(reset_at, tz=timezone.utc).isoformat() if reset_at else None,
+        "pct": used_percent,
+        "resets_at": resets_at,
         "window_secs": seconds,
         "key": key,
         "label": label,
@@ -450,11 +474,13 @@ def build_usage_json(api_data: dict) -> dict:
     # Code review limits
     cr = api_data.get("code_review_rate_limit") or {}
     cr_primary = cr.get("primary_window")
-    if cr_primary and cr_primary.get("used_percent", 0) > 0:
-        result["code_review"] = {
-            "pct": cr_primary["used_percent"],
-            "resets_at": datetime.fromtimestamp(cr_primary["reset_at"], tz=timezone.utc).isoformat() if cr_primary.get("reset_at") else None,
-        }
+    if isinstance(cr_primary, dict):
+        window = _build_window("code_review", cr_primary)
+        if window["pct"] is not None and window["pct"] > 0:
+            result["code_review"] = {
+                "pct": window["pct"],
+                "resets_at": window["resets_at"],
+            }
 
     # Credits
     credits = api_data.get("credits") or {}

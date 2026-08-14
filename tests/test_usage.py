@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codex_cli_usage import (
+    UsageServiceError,
     build_usage_json,
     classify_window,
     cmd_status,
@@ -85,6 +86,20 @@ class UsageWindowTests(unittest.TestCase):
             "label": "Primary",
             "window_secs": None,
         })
+
+    def test_malformed_window_values_are_unavailable(self):
+        invalid_windows = (
+            {"used_percent": float("nan")},
+            {"used_percent": 1, "limit_window_seconds": float("inf")},
+            {"used_percent": 1, "reset_at": "not-a-timestamp"},
+            {"used_percent": 1, "reset_at": 10**30},
+        )
+
+        for window in invalid_windows:
+            with self.subTest(window=window), self.assertRaisesRegex(
+                UsageServiceError, "Invalid rate limit response"
+            ):
+                build_usage_json({"rate_limit": {"primary_window": window}})
 
     def test_status_shows_one_weekly_row_and_no_spark_bucket(self):
         output = StringIO()
