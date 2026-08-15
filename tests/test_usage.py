@@ -116,7 +116,11 @@ class UsageWindowTests(unittest.TestCase):
     def test_statusline_enumerates_structured_windows(self):
         usage = build_usage_json(fixture("primary_5h_secondary_weekly.json"))
         output = StringIO()
-        with patch("codex_cli_usage._get_cached_usage", return_value=usage), redirect_stdout(output):
+        with (
+            patch("codex_cli_usage._get_cached_usage", return_value=usage),
+            patch("codex_cli_usage._TTY", False),
+            redirect_stdout(output),
+        ):
             cmd_statusline()
 
         self.assertIn("5h:12%", output.getvalue())
