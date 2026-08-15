@@ -1,6 +1,6 @@
 [project]
 name = "codex-cli-usage"
-version = "0.1.9"
+version = "0.1.10"
 description = "Codex CLI usage monitor — fetches rate limits through the Codex app-server"
 readme = "README.md"
 requires-python = ">=3.12"
